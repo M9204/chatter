@@ -139,6 +139,20 @@
 			padding: 0.5rem;
 			color: var(--muted);
 		}
+		.input-bar button {
+	height: 44px;
+	font-size: 1.1rem;
+}
+
+.message button.tts {
+	background: transparent;
+	border: none;
+	cursor: pointer;
+	font-size: 0.9rem;
+	margin-top: 0.3rem;
+	color: #555;
+}
+
 	</style>
 </head>
 
@@ -156,9 +170,17 @@
 		</div>
 
 		<div class="input-bar">
-			<textarea id="user-input" placeholder="Ask anything…" rows="1"></textarea>
-			<button id="send-button">Send</button>
-		</div>
+	<button id="mic-button" title="Speak">🎤</button>
+
+	<textarea
+		id="user-input"
+		placeholder="Ask anything…"
+		rows="1"
+	></textarea>
+
+	<button id="send-button">Send</button>
+</div>
+
 	</div>
 
 	<footer>
