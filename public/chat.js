@@ -1,17 +1,14 @@
 const chatMessages = document.getElementById("chat-messages");
 const userInput = document.getElementById("user-input");
 const sendButton = document.getElementById("send-button");
+const micButton = document.getElementById("mic-button");
 const typingIndicator = document.getElementById("typing-indicator");
 
 let isProcessing = false;
 let chatHistory = JSON.parse(localStorage.getItem("chatHistory")) || [
-	{
-		role: "assistant",
-		content: "Hello! How can I help you today?",
-	},
+	{ role: "assistant", content: "Hello! How can I help you today?" },
 ];
 
-// ---- helpers ----
 const saveHistory = () =>
 	localStorage.setItem("chatHistory", JSON.stringify(chatHistory));
 
@@ -23,21 +20,73 @@ const escapeHTML = (str) =>
 		({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]),
 	);
 
-// ---- UI ----
+// ============================
+// 🔊 TTS
+// ============================
+function speak(text) {
+	speechSynthesis.cancel();
+	const utterance = new SpeechSynthesisUtterance(text);
+	utterance.lang = "en-US"; // change to "ar-SA" if needed
+	utterance.rate = 1;
+	speechSynthesis.speak(utterance);
+}
+
+// ============================
+// 🎙 STT
+// ============================
+let recognition;
+if ("webkitSpeechRecognition" in window) {
+	recognition = new webkitSpeechRecognition();
+	recognition.lang = "en-US"; // or ar-SA
+	recognition.continuous = false;
+	recognition.interimResults = false;
+
+	recognition.onresult = (event) => {
+		userInput.value += event.results[0][0].transcript;
+		userInput.dispatchEvent(new Event("input"));
+	};
+
+	recognition.onerror = (e) => {
+		console.error("STT error:", e);
+	};
+
+	micButton.onclick = () => recognition.start();
+} else {
+	micButton.disabled = true;
+	micButton.title = "Speech not supported";
+}
+
+// ============================
+// UI
+// ============================
 function addMessage(role, text) {
 	const el = document.createElement("div");
 	el.className = `message ${role}-message`;
+
 	el.innerHTML = `
 		<div>${escapeHTML(text)}</div>
+		${
+			role === "assistant"
+				? `<button class="tts" title="Read aloud">🔊</button>`
+				: ""
+		}
 		<time>${timeNow()}</time>
 	`;
+
+	if (role === "assistant") {
+		el.querySelector(".tts").onclick = () => speak(text);
+	}
+
 	chatMessages.appendChild(el);
 	chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
+// Load saved messages
 chatHistory.forEach((m) => addMessage(m.role, m.content));
 
-// ---- events ----
+// ============================
+// Events
+// ============================
 userInput.addEventListener("input", () => {
 	userInput.style.height = "auto";
 	userInput.style.height = userInput.scrollHeight + "px";
@@ -52,7 +101,9 @@ userInput.addEventListener("keydown", (e) => {
 
 sendButton.onclick = sendMessage;
 
-// ---- main ----
+// ============================
+// Chat logic
+// ============================
 async function sendMessage() {
 	const message = userInput.value.trim();
 	if (!message || isProcessing) return;
@@ -71,8 +122,17 @@ async function sendMessage() {
 	let assistantText = "";
 	const assistantEl = document.createElement("div");
 	assistantEl.className = "message assistant-message";
-	assistantEl.innerHTML = `<div></div><time>${timeNow()}</time>`;
+	assistantEl.innerHTML = `
+		<div></div>
+		<button class="tts" title="Read aloud">🔊</button>
+		<time>${timeNow()}</time>
+	`;
+
 	const textEl = assistantEl.querySelector("div");
+	const ttsBtn = assistantEl.querySelector(".tts");
+
+	ttsBtn.onclick = () => speak(assistantText);
+
 	chatMessages.appendChild(assistantEl);
 
 	try {
@@ -81,8 +141,6 @@ async function sendMessage() {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ messages: chatHistory }),
 		});
-
-		if (!res.body) throw new Error("No response body");
 
 		const reader = res.body.getReader();
 		const decoder = new TextDecoder();
@@ -117,9 +175,9 @@ async function sendMessage() {
 			chatHistory.push({ role: "assistant", content: assistantText });
 			saveHistory();
 		}
-	} catch (err) {
-		addMessage("assistant", "⚠️ Something went wrong. Please try again.");
-		console.error(err);
+	} catch (e) {
+		addMessage("assistant", "⚠️ Error processing request.");
+		console.error(e);
 	} finally {
 		typingIndicator.classList.remove("visible");
 		isProcessing = false;
