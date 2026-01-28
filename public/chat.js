@@ -1,14 +1,41 @@
+// ============================
+// DOM
+// ============================
 const chatMessages = document.getElementById("chat-messages");
 const userInput = document.getElementById("user-input");
 const sendButton = document.getElementById("send-button");
 const micButton = document.getElementById("mic-button");
 const typingIndicator = document.getElementById("typing-indicator");
 
+// ============================
+// STATE
+// ============================
 let isProcessing = false;
+let foxAwake = false;
+
+// ============================
+// SYSTEM PROMPT (Fox personality)
+// ============================
 let chatHistory = JSON.parse(localStorage.getItem("chatHistory")) || [
-	{ role: "assistant", content: "Hello! How can I help you today?" },
+	{
+		role: "system",
+		content: `
+You are Fox 🦊.
+You speak like a friendly, witty human.
+You are playful, humorous, and warm.
+Keep replies natural and casual.
+Never say you are an AI.
+`
+	},
+	{
+		role: "assistant",
+		content: "Hey! I'm Fox 🦊 — say my name if you need me."
+	}
 ];
 
+// ============================
+// UTILS
+// ============================
 const saveHistory = () =>
 	localStorage.setItem("chatHistory", JSON.stringify(chatHistory));
 
@@ -23,37 +50,33 @@ const escapeHTML = (str) =>
 // ============================
 // 🔊 TTS
 // ============================
+function stopSpeaking() {
+	if (speechSynthesis.speaking) {
+		speechSynthesis.cancel();
+	}
+}
+
 function speak(text) {
-	speechSynthesis.cancel();
-	const utterance = new SpeechSynthesisUtterance(text);
-	utterance.lang = "en-US"; // change to "ar-SA" if needed
-	utterance.rate = 1;
-	speechSynthesis.speak(utterance);
+	stopSpeaking();
+	const u = new SpeechSynthesisUtterance(text);
+	u.lang = "en-US"; // change to ar-SA if needed
+	u.rate = 1.05;
+	u.pitch = 1.1;
+	speechSynthesis.speak(u);
 }
 
 // ============================
-// 🎙 STT
+// 😄 Wake responses
 // ============================
-let recognition;
-if ("webkitSpeechRecognition" in window) {
-	recognition = new webkitSpeechRecognition();
-	recognition.lang = "en-US"; // or ar-SA
-	recognition.continuous = false;
-	recognition.interimResults = false;
-
-	recognition.onresult = (event) => {
-		userInput.value += event.results[0][0].transcript;
-		userInput.dispatchEvent(new Event("input"));
-	};
-
-	recognition.onerror = (e) => {
-		console.error("STT error:", e);
-	};
-
-	micButton.onclick = () => recognition.start();
-} else {
-	micButton.disabled = true;
-	micButton.title = "Speech not supported";
+function randomWakeResponse() {
+	const responses = [
+		"Yeah? I'm here 😄",
+		"Fox online 🦊",
+		"Hey hey, talk to me!",
+		"You called?",
+		"Listening… go ahead!"
+	];
+	return responses[Math.floor(Math.random() * responses.length)];
 }
 
 // ============================
@@ -65,11 +88,7 @@ function addMessage(role, text) {
 
 	el.innerHTML = `
 		<div>${escapeHTML(text)}</div>
-		${
-			role === "assistant"
-				? `<button class="tts" title="Read aloud">🔊</button>`
-				: ""
-		}
+		${role === "assistant" ? `<button class="tts">🔊</button>` : ""}
 		<time>${timeNow()}</time>
 	`;
 
@@ -81,11 +100,68 @@ function addMessage(role, text) {
 	chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
-// Load saved messages
-chatHistory.forEach((m) => addMessage(m.role, m.content));
+// Load history
+chatHistory.forEach((m) => {
+	if (m.role !== "system") addMessage(m.role, m.content);
+});
 
 // ============================
-// Events
+// 🎙 STT + Wake word
+// ============================
+let recognition;
+
+if ("webkitSpeechRecognition" in window) {
+	recognition = new webkitSpeechRecognition();
+	recognition.lang = "en-US"; // or ar-SA
+	recognition.continuous = true;
+	recognition.interimResults = false;
+
+	recognition.onresult = (event) => {
+		const transcript =
+			event.results[event.results.length - 1][0].transcript
+				.trim()
+				.toLowerCase();
+
+		console.log("🎧 Heard:", transcript);
+
+		// Cut Fox speech immediately
+		stopSpeaking();
+
+		// Wake word
+		if (!foxAwake && transcript.includes("fox")) {
+			foxAwake = true;
+			const reply = randomWakeResponse();
+			addMessage("assistant", reply);
+			speak(reply);
+			return;
+		}
+
+		// After wake: listen for command
+		if (foxAwake) {
+			foxAwake = false;
+			const cleaned = transcript.replace("fox", "").trim();
+			if (cleaned.length > 0) {
+				userInput.value = cleaned;
+				userInput.dispatchEvent(new Event("input"));
+				sendMessage();
+			}
+		}
+	};
+
+	recognition.onerror = (e) => console.error("STT error:", e);
+
+	micButton.onclick = () => {
+		recognition.start();
+		micButton.textContent = "🟢";
+		micButton.title = "Fox is listening";
+	};
+} else {
+	micButton.disabled = true;
+	micButton.title = "Speech recognition not supported";
+}
+
+// ============================
+// INPUT EVENTS
 // ============================
 userInput.addEventListener("input", () => {
 	userInput.style.height = "auto";
@@ -102,7 +178,7 @@ userInput.addEventListener("keydown", (e) => {
 sendButton.onclick = sendMessage;
 
 // ============================
-// Chat logic
+// CHAT LOGIC
 // ============================
 async function sendMessage() {
 	const message = userInput.value.trim();
@@ -120,19 +196,17 @@ async function sendMessage() {
 	typingIndicator.classList.add("visible");
 
 	let assistantText = "";
+
 	const assistantEl = document.createElement("div");
 	assistantEl.className = "message assistant-message";
 	assistantEl.innerHTML = `
 		<div></div>
-		<button class="tts" title="Read aloud">🔊</button>
+		<button class="tts">🔊</button>
 		<time>${timeNow()}</time>
 	`;
 
 	const textEl = assistantEl.querySelector("div");
-	const ttsBtn = assistantEl.querySelector(".tts");
-
-	ttsBtn.onclick = () => speak(assistantText);
-
+	assistantEl.querySelector(".tts").onclick = () => speak(assistantText);
 	chatMessages.appendChild(assistantEl);
 
 	try {
@@ -174,9 +248,10 @@ async function sendMessage() {
 		if (assistantText) {
 			chatHistory.push({ role: "assistant", content: assistantText });
 			saveHistory();
+			speak(assistantText); // Fox talks automatically
 		}
 	} catch (e) {
-		addMessage("assistant", "⚠️ Error processing request.");
+		addMessage("assistant", "Oops… something went wrong 😅");
 		console.error(e);
 	} finally {
 		typingIndicator.classList.remove("visible");
