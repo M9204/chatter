@@ -1,230 +1,129 @@
-/**
- * LLM Chat App Frontend
- *
- * Handles the chat UI interactions and communication with the backend API.
- */
-
-// DOM elements
 const chatMessages = document.getElementById("chat-messages");
 const userInput = document.getElementById("user-input");
 const sendButton = document.getElementById("send-button");
 const typingIndicator = document.getElementById("typing-indicator");
 
-// Chat state
-let chatHistory = [
+let isProcessing = false;
+let chatHistory = JSON.parse(localStorage.getItem("chatHistory")) || [
 	{
 		role: "assistant",
-		content:
-			"Hello! I'm an LLM chat app powered by Cloudflare Workers AI. How can I help you today?",
+		content: "Hello! How can I help you today?",
 	},
 ];
-let isProcessing = false;
 
-// Auto-resize textarea as user types
-userInput.addEventListener("input", function () {
-	this.style.height = "auto";
-	this.style.height = this.scrollHeight + "px";
+// ---- helpers ----
+const saveHistory = () =>
+	localStorage.setItem("chatHistory", JSON.stringify(chatHistory));
+
+const timeNow = () =>
+	new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+const escapeHTML = (str) =>
+	str.replace(/[&<>"']/g, (m) =>
+		({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]),
+	);
+
+// ---- UI ----
+function addMessage(role, text) {
+	const el = document.createElement("div");
+	el.className = `message ${role}-message`;
+	el.innerHTML = `
+		<div>${escapeHTML(text)}</div>
+		<time>${timeNow()}</time>
+	`;
+	chatMessages.appendChild(el);
+	chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+chatHistory.forEach((m) => addMessage(m.role, m.content));
+
+// ---- events ----
+userInput.addEventListener("input", () => {
+	userInput.style.height = "auto";
+	userInput.style.height = userInput.scrollHeight + "px";
 });
 
-// Send message on Enter (without Shift)
-userInput.addEventListener("keydown", function (e) {
+userInput.addEventListener("keydown", (e) => {
 	if (e.key === "Enter" && !e.shiftKey) {
 		e.preventDefault();
 		sendMessage();
 	}
 });
 
-// Send button click handler
-sendButton.addEventListener("click", sendMessage);
+sendButton.onclick = sendMessage;
 
-/**
- * Sends a message to the chat API and processes the response
- */
+// ---- main ----
 async function sendMessage() {
 	const message = userInput.value.trim();
+	if (!message || isProcessing) return;
 
-	// Don't send empty messages
-	if (message === "" || isProcessing) return;
-
-	// Disable input while processing
 	isProcessing = true;
-	userInput.disabled = true;
-	sendButton.disabled = true;
+	userInput.disabled = sendButton.disabled = true;
 
-	// Add user message to chat
-	addMessageToChat("user", message);
+	addMessage("user", message);
+	chatHistory.push({ role: "user", content: message });
+	saveHistory();
 
-	// Clear input
 	userInput.value = "";
 	userInput.style.height = "auto";
-
-	// Show typing indicator
 	typingIndicator.classList.add("visible");
 
-	// Add message to history
-	chatHistory.push({ role: "user", content: message });
+	let assistantText = "";
+	const assistantEl = document.createElement("div");
+	assistantEl.className = "message assistant-message";
+	assistantEl.innerHTML = `<div></div><time>${timeNow()}</time>`;
+	const textEl = assistantEl.querySelector("div");
+	chatMessages.appendChild(assistantEl);
 
 	try {
-		// Create new assistant response element
-		const assistantMessageEl = document.createElement("div");
-		assistantMessageEl.className = "message assistant-message";
-		assistantMessageEl.innerHTML = "<p></p>";
-		chatMessages.appendChild(assistantMessageEl);
-		const assistantTextEl = assistantMessageEl.querySelector("p");
-
-		// Scroll to bottom
-		chatMessages.scrollTop = chatMessages.scrollHeight;
-
-		// Send request to API
-		const response = await fetch("/api/chat", {
+		const res = await fetch("/api/chat", {
 			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({
-				messages: chatHistory,
-			}),
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ messages: chatHistory }),
 		});
 
-		// Handle errors
-		if (!response.ok) {
-			throw new Error("Failed to get response");
-		}
-		if (!response.body) {
-			throw new Error("Response body is null");
-		}
+		if (!res.body) throw new Error("No response body");
 
-		// Process streaming response
-		const reader = response.body.getReader();
+		const reader = res.body.getReader();
 		const decoder = new TextDecoder();
-		let responseText = "";
 		let buffer = "";
-		const flushAssistantText = () => {
-			assistantTextEl.textContent = responseText;
-			chatMessages.scrollTop = chatMessages.scrollHeight;
-		};
 
-		let sawDone = false;
 		while (true) {
 			const { done, value } = await reader.read();
+			if (done) break;
 
-			if (done) {
-				// Process any remaining complete events in buffer
-				const parsed = consumeSseEvents(buffer + "\n\n");
-				for (const data of parsed.events) {
-					if (data === "[DONE]") {
-						break;
-					}
-					try {
-						const jsonData = JSON.parse(data);
-						// Handle both Workers AI format (response) and OpenAI format (choices[0].delta.content)
-						let content = "";
-						if (
-							typeof jsonData.response === "string" &&
-							jsonData.response.length > 0
-						) {
-							content = jsonData.response;
-						} else if (jsonData.choices?.[0]?.delta?.content) {
-							content = jsonData.choices[0].delta.content;
-						}
-						if (content) {
-							responseText += content;
-							flushAssistantText();
-						}
-					} catch (e) {
-						console.error("Error parsing SSE data as JSON:", e, data);
-					}
-				}
-				break;
-			}
-
-			// Decode chunk
 			buffer += decoder.decode(value, { stream: true });
-			const parsed = consumeSseEvents(buffer);
-			buffer = parsed.buffer;
-			for (const data of parsed.events) {
-				if (data === "[DONE]") {
-					sawDone = true;
-					buffer = "";
-					break;
+			const parts = buffer.split("\n\n");
+			buffer = parts.pop();
+
+			for (const part of parts) {
+				if (!part.startsWith("data:")) continue;
+				const data = part.replace("data:", "").trim();
+				if (data === "[DONE]") break;
+
+				const json = JSON.parse(data);
+				const token =
+					json.response || json.choices?.[0]?.delta?.content || "";
+
+				if (token) {
+					assistantText += token;
+					textEl.textContent = assistantText;
+					chatMessages.scrollTop = chatMessages.scrollHeight;
 				}
-				try {
-					const jsonData = JSON.parse(data);
-					// Handle both Workers AI format (response) and OpenAI format (choices[0].delta.content)
-					let content = "";
-					if (
-						typeof jsonData.response === "string" &&
-						jsonData.response.length > 0
-					) {
-						content = jsonData.response;
-					} else if (jsonData.choices?.[0]?.delta?.content) {
-						content = jsonData.choices[0].delta.content;
-					}
-					if (content) {
-						responseText += content;
-						flushAssistantText();
-					}
-				} catch (e) {
-					console.error("Error parsing SSE data as JSON:", e, data);
-				}
-			}
-			if (sawDone) {
-				break;
 			}
 		}
 
-		// Add completed response to chat history
-		if (responseText.length > 0) {
-			chatHistory.push({ role: "assistant", content: responseText });
+		if (assistantText) {
+			chatHistory.push({ role: "assistant", content: assistantText });
+			saveHistory();
 		}
-	} catch (error) {
-		console.error("Error:", error);
-		addMessageToChat(
-			"assistant",
-			"Sorry, there was an error processing your request.",
-		);
+	} catch (err) {
+		addMessage("assistant", "⚠️ Something went wrong. Please try again.");
+		console.error(err);
 	} finally {
-		// Hide typing indicator
 		typingIndicator.classList.remove("visible");
-
-		// Re-enable input
 		isProcessing = false;
-		userInput.disabled = false;
-		sendButton.disabled = false;
+		userInput.disabled = sendButton.disabled = false;
 		userInput.focus();
 	}
-}
-
-/**
- * Helper function to add message to chat
- */
-function addMessageToChat(role, content) {
-	const messageEl = document.createElement("div");
-	messageEl.className = `message ${role}-message`;
-	messageEl.innerHTML = `<p>${content}</p>`;
-	chatMessages.appendChild(messageEl);
-
-	// Scroll to bottom
-	chatMessages.scrollTop = chatMessages.scrollHeight;
-}
-
-function consumeSseEvents(buffer) {
-	let normalized = buffer.replace(/\r/g, "");
-	const events = [];
-	let eventEndIndex;
-	while ((eventEndIndex = normalized.indexOf("\n\n")) !== -1) {
-		const rawEvent = normalized.slice(0, eventEndIndex);
-		normalized = normalized.slice(eventEndIndex + 2);
-
-		const lines = rawEvent.split("\n");
-		const dataLines = [];
-		for (const line of lines) {
-			if (line.startsWith("data:")) {
-				dataLines.push(line.slice("data:".length).trimStart());
-			}
-		}
-		if (dataLines.length === 0) continue;
-		events.push(dataLines.join("\n"));
-	}
-	return { events, buffer: normalized };
 }
